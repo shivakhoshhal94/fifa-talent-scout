@@ -129,7 +129,7 @@ If you want, I can also:
 - restore any additional documentation you prefer
 - open a small test script that validates `load_data` with a local sample CSV
 
----
+
 
 Built for scouting — enjoy exploring FIFA data! ⚽
 

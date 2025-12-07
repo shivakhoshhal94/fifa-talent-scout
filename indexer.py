@@ -1,8 +1,5 @@
-# indexer_no_langchain.py
-"""
-FAISS indexer WITHOUT LangChain vectorstores.
-Uses OpenAI embeddings API to create embeddings and holds a faiss index + metadata mapping.
-"""
+
+""
 
 import os
 import pickle
@@ -16,17 +13,17 @@ import openai
 EMBED_CACHE = "embeddings_cache_no_lc.pkl"
 FAISS_INDEX_FILE = "faiss_index_no_lc.index"
 METADATA_FILE = "faiss_metadata_no_lc.pkl"
-OPENAI_EMBED_MODEL = "text-embedding-3-small"  # or whichever embedding model you use
+OPENAI_EMBED_MODEL = "text-embedding-3-small" 
 BATCH_SIZE = 64
 
-# Ensure OPENAI_API_KEY is set in env
+
 if not os.getenv("OPENAI_API_KEY"):
     raise RuntimeError("Please set OPENAI_API_KEY in environment before using indexer_no_langchain")
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def _get_page_text(doc_or_row) -> str:
-    # Accept either objects with page_content or simple dict with 'text' or 'page_content'
+    
     if hasattr(doc_or_row, "page_content"):
         return doc_or_row.page_content
     if isinstance(doc_or_row, dict):
@@ -34,7 +31,7 @@ def _get_page_text(doc_or_row) -> str:
     return str(doc_or_row)
 
 def _get_row_hash(doc_or_row) -> str:
-    # attempt to return metadata row_hash if available
+    
     if hasattr(doc_or_row, "metadata"):
         return str(doc_or_row.metadata.get("row_hash", ""))
     if isinstance(doc_or_row, dict):
@@ -115,8 +112,7 @@ def build_index(docs: List, rebuild: bool = False) -> None:
     dim = vectors_np.shape[1]
 
     # create or overwrite index
-    index = faiss.IndexFlatIP(dim)  # inner product (cosine-like if normalized)
-    # normalize vectors for cosine similarity (optional)
+    index = faiss.IndexFlatIP(dim) 
     faiss.normalize_L2(vectors_np)
     index.add(vectors_np)
 
@@ -149,6 +145,5 @@ def search_index(query: str, k: int = 5, model: str = OPENAI_EMBED_MODEL) -> Lis
         results.append((metadata_map[idx], float(score)))
     return results
 
-# Example small test (run manually)
 if __name__ == "__main__":
     print("indexer_no_langchain module loaded. Call build_index(docs) with your docs list to create index.")

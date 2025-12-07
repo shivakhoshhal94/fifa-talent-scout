@@ -1,19 +1,22 @@
-# indexer_chunked.py (fixed)
+
 import os
 import time
 import pickle
-import faiss
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.schema import Document
+
 import numpy as np
 import pandas as pd
-import openai
+
 from typing import List, Dict, Any, Tuple
 
-# NOTE: do NOT raise on import if OPENAI_API_KEY missing. We'll check lazily in build_index_chunked.
+
 OPENAI_ENV_NAME = "OPENAI_API_KEY"
 
 CSV_PATH = "data/male_players.csv"
 
-# canonical columns our app/indexer expects
+
 CANONICAL_COLS = [
     "sofifa_id", "long_name", "age", "club_name", "league_name",
     "nationality_name", "player_pos", "preferred_foot", "weak_foot",
@@ -49,7 +52,7 @@ FAISS_INDEX_FILE = "faiss_index_chunked.index"
 METADATA_FILE = "faiss_metadata_chunked.pkl"
 CACHE_FILE = "embeddings_cache_chunked.pkl"
 
-# Embedding settings (tune EMBED_BATCH down if memory/rate-limits)
+# Embedding settings 
 EMBED_MODEL = "text-embedding-3-small"
 EMBED_BATCH = 128
 
@@ -116,18 +119,71 @@ def save_cache(cache: Dict[str, np.ndarray]):
     with open(CACHE_FILE, "wb") as f:
         pickle.dump(out, f)
 
-def build_index_chunked(csv_path: str = CSV_PATH, chunk_rows: int = 15000, embed_batch: int = EMBED_BATCH, progress_callback=None):
-    """
-    progress_callback: optional function called as progress_callback(chunk_i, total_rows, time_taken_seconds)
-    """
-    _ensure_openai_key()
+INDEX_DIR = "faiss_langchain_index"  # folder name to store index
 
-    cache = load_cache()
-    metadata: List[Dict[str, Any]] = []
-    index = None
+
+def build_index_chunked(
+    csv_path: str = CSV_PATH,
+    chunk_rows: int = 15000,
+    progress_callback=None,
+):
+    """
+    Build a FAISS index using LangChain instead of manual faiss/openai calls.
+    Saves it to disk.
+    """
+    _ensure_openai_key()  # ensures API key exists
+
+    embeddings = OpenAIEmbeddings(
+        model=EMBED_MODEL,
+        openai_api_key=os.getenv(OPENAI_ENV_NAME),
+    )
+
+    vectorstore = None
     total_rows = 0
 
-    reader = pd.read_csv(csv_path, chunksize=chunk_rows, low_memory=True)
+    reader = pd.read_csv(
+        csv_path,
+        chunksize=chunk_rows,
+        low_memory=True,
+        encoding="utf-8",
+    )
+
+    for chunk_i, raw_df in enumerate(reader):
+        df = raw_df.fillna("")
+        mapping = _detect_column_map(list(df.columns))
+        df_can = _rename_and_fill(df, mapping)
+
+        texts = []
+        metadatas = []
+        for _, row in df_can.iterrows():
+            texts.append(row_to_text(row))
+            metadatas.append(
+                {
+                    "id": row.get("sofifa_id", None),
+                    "name": row.get("long_name", ""),
+                    "club": row.get("club_name", ""),
+                    "position": row.get("player_pos", ""),
+                    "overall": row.get("overall", ""),
+                    "potential": row.get("potential", ""),
+                }
+            )
+
+        if vectorstore is None:
+            vectorstore = FAISS.from_texts(
+                texts=texts, embedding=embeddings, metadatas=metadatas
+            )
+        else:
+            vectorstore.add_texts(texts=texts, metadatas=metadatas)
+
+        vectorstore.save_local(INDEX_DIR)
+
+        total_rows += len(df_can)
+        if callable(progress_callback):
+            progress_callback(chunk_i, total_rows, 0)
+
+    return vectorstore
+
+
 
     for chunk_i, raw_df in enumerate(reader):
         t0 = time.time()
@@ -183,21 +239,29 @@ def build_index_chunked(csv_path: str = CSV_PATH, chunk_rows: int = 15000, embed
     return index, metadata
 
 
-def load_index_and_meta() -> Tuple[faiss.Index, List[Dict[str, Any]]]:
-    if not os.path.exists(FAISS_INDEX_FILE):
-        raise FileNotFoundError("Index not built")
-    if not os.path.exists(METADATA_FILE):
-        raise FileNotFoundError("Metadata not found")
-    index = faiss.read_index(FAISS_INDEX_FILE)
-    with open(METADATA_FILE, "rb") as f:
-        meta = pickle.load(f)
-    return index, meta
+def load_vectorstore() -> FAISS:
+    """Load LangChain-FAISS index from disk."""
+    _ensure_openai_key()
+    embeddings = OpenAIEmbeddings(
+        model=EMBED_MODEL,
+        openai_api_key=os.getenv(OPENAI_ENV_NAME),
+    )
+    return FAISS.load_local(
+        INDEX_DIR, embeddings, allow_dangerous_deserialization=True
+    )
 
-def search_index_faiss(index: faiss.Index, metadata: List[Dict[str, Any]], query_emb: np.ndarray, k: int = 5):
-    faiss.normalize_L2(query_emb)
-    D, I = index.search(query_emb, k)
-    results = []
-    for dist, idx in zip(D[0], I[0]):
-        if idx >= 0 and idx < len(metadata):
-            results.append((metadata[idx], float(dist)))
-    return results
+
+def search_players(query: str, k: int = 5):
+    """Search players semantically via LangChain FAISS."""
+    vs = load_vectorstore()
+    results = vs.similarity_search_with_score(query, k=k)
+
+    formatted = []
+    for doc, score in results:
+        meta = dict(doc.metadata)
+        meta["text"] = doc.page_content
+        formatted.append((meta, score))
+
+    return formatted
+
+
